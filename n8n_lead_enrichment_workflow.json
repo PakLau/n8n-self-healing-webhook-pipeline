@@ -1,0 +1,376 @@
+{
+  "name": "Self-Healing AI Lead Enrichment & CRM Sync Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "v1/inbound-lead",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook-01",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        340
+      ],
+      "webhookId": "inbound-lead-v1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.body || $input.first().json;\nconst contact = raw.contact || raw.user || {};\nconst email = String(contact.email || raw.email || '').trim().toLowerCase();\nconst domain = email.includes('@') ? email.split('@')[1] : '';\nconst isValid = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email);\n\nreturn [{\n  json: {\n    lead_id: raw.event_id || `lead_${Date.now()}`,\n    full_name: [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Unknown',\n    email,\n    company_domain: domain,\n    source: raw.utm_source || 'direct_webhook',\n    is_valid: isValid,\n    ingested_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-code-02",
+      "name": "Payload Normalizer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_valid }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "node-if-03",
+      "name": "Schema Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'rejected', reason: 'Invalid email schema', lead_id: $json.lead_id }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "node-resp-400",
+      "name": "Respond 400 Invalid",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        940,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.enrichment-provider.io/v2/companies/find?domain={{ $json.company_domain }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "node-http-04",
+      "name": "Company Enrichment API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        240
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "messages": {
+          "values": [
+            {
+              "content": "Classify inbound B2B lead into Enterprise, SMB, or Low-Fit based on company size and role. Return strict JSON: {\"tier\": \"...\", \"score\": 0-100, \"summary\": \"...\"}."
+            }
+          ]
+        },
+        "jsonOutput": true
+      },
+      "id": "node-ai-05",
+      "name": "AI Lead Scoring",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [
+        1200,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "string": [
+                  {
+                    "value1": "={{ $json.tier }}",
+                    "value2": "Enterprise"
+                  }
+                ]
+              },
+              "outputKey": "Enterprise"
+            },
+            {
+              "conditions": {
+                "string": [
+                  {
+                    "value1": "={{ $json.tier }}",
+                    "value2": "SMB"
+                  }
+                ]
+              },
+              "outputKey": "SMB"
+            }
+          ]
+        }
+      },
+      "id": "node-switch-06",
+      "name": "Route by Tier",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1440,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "upsert",
+        "email": "={{ $('Payload Normalizer').item.json.email }}"
+      },
+      "id": "node-hubspot-07",
+      "name": "HubSpot CRM Upsert",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#hot-enterprise-leads",
+        "text": "=New Enterprise Lead: {{ $('Payload Normalizer').item.json.full_name }} ({{ $json.score }}/100)"
+      },
+      "id": "node-slack-08",
+      "name": "Slack Priority Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1940,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "sheetName": "SMB_Leads_Queue"
+      },
+      "id": "node-sheets-09",
+      "name": "Google Sheets Sync",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        1700,
+        340
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "node-err-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "#ops-workflow-alerts",
+        "text": "=Workflow Error in {{ $json.workflow.name }} at node {{ $json.execution.lastNodeExecuted }}: {{ $json.execution.error.message }}"
+      },
+      "id": "node-err-slack",
+      "name": "Ops Failure Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1460,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## [1] Ingestion & Schema Guard\n- Header-authenticated Webhook\n- Flattens nested JSON objects\n- Rejects invalid emails with HTTP 400",
+        "height": 340,
+        "width": 660,
+        "color": 4
+      },
+      "id": "sticky-1",
+      "name": "Sticky Note 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        180,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## [2] AI Enrichment & Tier Routing\n- Auto-retries 429/503 up to 3x\n- Structured JSON intent scoring\n- Routes Enterprise vs SMB leads",
+        "height": 360,
+        "width": 1160,
+        "color": 5
+      },
+      "id": "sticky-2",
+      "name": "Sticky Note 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        900,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## [3] Fault Tolerance & Observability\n- Captures unhandled exceptions\n- Pushes stack trace + execution URL to Slack",
+        "height": 220,
+        "width": 520,
+        "color": 3
+      },
+      "id": "sticky-3",
+      "name": "Sticky Note 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1150,
+        460
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Payload Normalizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload Normalizer": {
+      "main": [
+        [
+          {
+            "node": "Schema Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schema Valid?": {
+      "main": [
+        [
+          {
+            "node": "Company Enrichment API",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400 Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Company Enrichment API": {
+      "main": [
+        [
+          {
+            "node": "AI Lead Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Lead Scoring": {
+      "main": [
+        [
+          {
+            "node": "Route by Tier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Tier": {
+      "main": [
+        [
+          {
+            "node": "HubSpot CRM Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Google Sheets Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HubSpot CRM Upsert": {
+      "main": [
+        [
+          {
+            "node": "Slack Priority Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Ops Failure Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "valid_enterprise_webhook": {
+    "event_id": "evt_98412a",
+    "utm_source": "partner_api",
+    "contact": {
+      "first_name": "Marcus",
+      "last_name": "Vance",
+      "email": "  Marcus.Vance@AcmeCloud.io ",
+      "title": "VP of Engineering"
+    },
+    "metadata": {
+      "employees": 450,
+      "plan_interest": "enterprise"
+    }
+  },
+  "malformed_missing_email_webhook": {
+    "event_id": "evt_98413b",
+    "user": {
+      "first_name": "Test",
+      "email": "invalid-email-format"
+    }
+  }
+}
